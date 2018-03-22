@@ -38,7 +38,7 @@ static SLEngineItf engineEngine;
 static SLObjectItf outputMixObject = NULL;
 static SLEnvironmentalReverbItf outputMixEnvironmentalReverb = NULL;
 static SLObjectItf bqPlayerObject = NULL;
-static SLPlayItf bqPlayerPlay;
+static SLPlayItf bqPlayerPlay = NULL;
 static SLAndroidSimpleBufferQueueItf bqPlayerBufferQueue;
 static SLEffectSendItf bqPlayerEffectSend;
 static SLMuteSoloItf bqPlayerMuteSolo;
@@ -51,13 +51,6 @@ static pthread_mutex_t audioEngineLock = PTHREAD_MUTEX_INITIALIZER;
 static const SLEnvironmentalReverbSettings reverbSettings =
         SL_I3DL2_ENVIRONMENT_PRESET_STONECORRIDOR;
 
-enum States{
-    Play,
-    Stop
-};
-
-static States playStates = Play;
-
 // 释放相关资源
 void releaseFFmpegAudioPlay() {
     av_packet_unref(&packet);
@@ -69,7 +62,6 @@ void releaseFFmpegAudioPlay() {
 
 // shut down the native audio system
 void shutdown() {
-    playStates = Stop;
     // destroy buffer queue audio player object, and invalidate all associated interfaces
     if (bqPlayerObject != NULL) {
         (*bqPlayerObject)->Destroy(bqPlayerObject);
@@ -101,9 +93,6 @@ void shutdown() {
 
 
 int getPCM() {
-    if(playStates == Stop){
-        return -1;
-    }
     while (av_read_frame(pFormatCtx, &packet) >= 0) {
         if (packet.stream_index == audioindex) {
             int ret = avcodec_send_packet(pCodecCtx, &packet);
@@ -141,29 +130,29 @@ int getPCM() {
     return -1;
 }
 
-// create the engine and output mix objects
+//创建OpenSLES引擎
 extern "C"
 void createEngine() {
     SLresult result;
-    // create engine
+    //创建引擎
     result = slCreateEngine(&engineObject, 0, NULL, 0, NULL, NULL);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
-    // realize the engine
+    //关联引擎
     result = (*engineObject)->Realize(engineObject, SL_BOOLEAN_FALSE);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
-    // get the engine interface, which is needed in order to create other objects
+    //获取引擎接口, which is needed in order to create other objects
     result = (*engineObject)->GetInterface(engineObject, SL_IID_ENGINE, &engineEngine);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
-    // create output mix, with environmental reverb specified as a non-required interface
+    //创建输出混音器, with environmental reverb specified as a non-required interface
     const SLInterfaceID ids[1] = {SL_IID_ENVIRONMENTALREVERB};
     const SLboolean req[1] = {SL_BOOLEAN_FALSE};
     result = (*engineEngine)->CreateOutputMix(engineEngine, &outputMixObject, 1, ids, req);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
-    // realize the output mix
+    //关联输出混音器
     result = (*outputMixObject)->Realize(outputMixObject, SL_BOOLEAN_FALSE);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
@@ -171,6 +160,7 @@ void createEngine() {
     // this could fail if the environmental reverb effect is not available,
     // either because the feature is not present, excessive CPU load, or
     // the required MODIFY_AUDIO_SETTINGS permission was not requested and granted
+    //获取reverb接口
     result = (*outputMixObject)->GetInterface(outputMixObject, SL_IID_ENVIRONMENTALREVERB,
                                               &outputMixEnvironmentalReverb);
     if (SL_RESULT_SUCCESS == result) {
@@ -192,15 +182,11 @@ void releaseResampleBuf(void) {
     resampleBuf = NULL;
 }
 
-
 // this callback handler is called every time a buffer finishes playing
 extern "C"
 void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context) {
     assert(bq == bqPlayerBufferQueue);
     assert(NULL == context);
-    if(playStates == Stop){
-        return;
-    }
     // for streaming playback, replace this test by logic to find and fill the next buffer
     if (getPCM() < 0)//解码音频文件
         return;
@@ -228,15 +214,11 @@ void createBufferQueueAudioPlayer(int sampleRate, int channel) {
         bqPlayerSampleRate = sampleRate * 1000;
 
     }
-    // configure audio source
+    //配置音频源
     SLDataLocator_AndroidSimpleBufferQueue loc_bufq = {SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, 2};
     SLDataFormat_PCM format_pcm = {SL_DATAFORMAT_PCM, 1, SL_SAMPLINGRATE_8,
                                    SL_PCMSAMPLEFORMAT_FIXED_16, SL_PCMSAMPLEFORMAT_FIXED_16,
                                    SL_SPEAKER_FRONT_CENTER, SL_BYTEORDER_LITTLEENDIAN};
-    /*
-     * Enable Fast Audio when possible:  once we set the same rate to be the native, fast audio path
-     * will be triggered
-     */
     if (bqPlayerSampleRate) {
         format_pcm.samplesPerSec = bqPlayerSampleRate;       //sample rate in mili second
     }
@@ -248,7 +230,7 @@ void createBufferQueueAudioPlayer(int sampleRate, int channel) {
     }
     SLDataSource audioSrc = {&loc_bufq, &format_pcm};
 
-    // configure audio sink
+    //配置音频池
     SLDataLocator_OutputMix loc_outmix = {SL_DATALOCATOR_OUTPUTMIX, outputMixObject};
     SLDataSink audioSnk = {&loc_outmix, NULL};
     /*
@@ -260,28 +242,29 @@ void createBufferQueueAudioPlayer(int sampleRate, int channel) {
             /*SL_IID_MUTESOLO,*/};
     const SLboolean req[3] = {SL_BOOLEAN_TRUE, SL_BOOLEAN_TRUE, SL_BOOLEAN_TRUE,
             /*SL_BOOLEAN_TRUE,*/ };
+    //创建音频播放器
     result = (*engineEngine)->CreateAudioPlayer(engineEngine, &bqPlayerObject, &audioSrc, &audioSnk,
                                                 bqPlayerSampleRate ? 2 : 3, ids, req);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
-    // realize the player
+    // 关联播放器
     result = (*bqPlayerObject)->Realize(bqPlayerObject, SL_BOOLEAN_FALSE);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
-    // get the play interface
+    // 获取播放接口
     result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_PLAY, &bqPlayerPlay);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
-    // get the buffer queue interface
+    // 获取缓冲队列接口
     result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_BUFFERQUEUE,
                                              &bqPlayerBufferQueue);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
-    // register callback on the buffer queue
+    // 注册缓冲队列回调
     result = (*bqPlayerBufferQueue)->RegisterCallback(bqPlayerBufferQueue, bqPlayerCallback, NULL);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
-    // get the effect send interface
+    // 获取音效接口
     bqPlayerEffectSend = NULL;
     if (0 == bqPlayerSampleRate) {
         result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_EFFECTSEND,
@@ -295,16 +278,15 @@ void createBufferQueueAudioPlayer(int sampleRate, int channel) {
     assert(SL_RESULT_SUCCESS == result);
     (void)result;
 #endif
-    // get the volume interface
+    // 获取音量接口
     result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_VOLUME, &bqPlayerVolume);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
-    // set the player's state to playing
+    // 开始播放音乐
     result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PLAYING);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
 }
-
 
 extern "C"
 //int createFFmpegAudioPlay(const char *file_name) {
@@ -389,6 +371,21 @@ int Java_com_lake_ndkaudiotest_MainActivity_play(JNIEnv *env, jclass clazz, jstr
 extern "C"
 int Java_com_lake_ndkaudiotest_MainActivity_stop(JNIEnv *env, jclass clazz) {
     shutdown();
+    return 0;
+}
+
+extern "C"
+int Java_com_lake_ndkaudiotest_MainActivity_pause(JNIEnv *env, jclass clazz, jboolean isPlaying) {
+    SLresult result;
+    // make sure the asset audio player was created
+    // 暂停音乐
+    if (NULL != bqPlayerPlay) {
+        result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, isPlaying ? SL_PLAYSTATE_PAUSED
+                                                                       : SL_PLAYSTATE_PLAYING);
+        assert(SL_RESULT_SUCCESS == result);
+        (void) result;
+    }
+    return 0;
 }
 
 

@@ -6,7 +6,7 @@ import android.os.Bundle;
 import android.view.View;
 
 public class MainActivity extends AppCompatActivity {
-
+    boolean play = true;
     // Used to load the 'native-lib' library on application startup.
     static {
         System.loadLibrary("native-lib");
@@ -24,8 +24,20 @@ public class MainActivity extends AppCompatActivity {
                     public void run() {
                         //获取文件地址
                         String folderurl = Environment.getExternalStorageDirectory().getPath();
-                        String inputurl = folderurl+"/MyLocalPlayer/012.mp3";
+                        String inputurl = folderurl+"/MyLocalPlayer/011.mp3";
                         play(inputurl);
+                    }
+                }).start();
+            }
+        });
+        findViewById(R.id.pause).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        pause(play);
+                        play = !play;
                     }
                 }).start();
             }
@@ -37,7 +49,6 @@ public class MainActivity extends AppCompatActivity {
                     @Override
                     public void run() {
                         stop();
-
                     }
                 }).start();
             }
@@ -45,4 +56,5 @@ public class MainActivity extends AppCompatActivity {
     }
     public native void play(String url);
     public native void stop();
+    public native void pause(boolean play);
 }
