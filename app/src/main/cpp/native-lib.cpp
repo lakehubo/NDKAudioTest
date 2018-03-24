@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <string>
+#include "unistd.h"
 
 extern "C" {
 #include "libavcodec/avcodec.h"
@@ -31,6 +32,8 @@ static SwrContext *swr;
 static AVFormatContext *pFormatCtx;
 static int audioindex;
 uint8_t *outputBuffer;
+int timestamp = -1;
+int iTotalSeconds = -1;
 
 // engine interfaces
 static SLObjectItf engineObject = NULL;
@@ -38,12 +41,13 @@ static SLEngineItf engineEngine;
 static SLObjectItf outputMixObject = NULL;
 static SLEnvironmentalReverbItf outputMixEnvironmentalReverb = NULL;
 static SLObjectItf bqPlayerObject = NULL;
-static SLPlayItf bqPlayerPlay = NULL;
+static SLPlayItf bqPlayerPlay;
 static SLAndroidSimpleBufferQueueItf bqPlayerBufferQueue;
 static SLEffectSendItf bqPlayerEffectSend;
 static SLMuteSoloItf bqPlayerMuteSolo;
 static SLVolumeItf bqPlayerVolume;
 static SLmilliHertz bqPlayerSampleRate = 0;
+static SLmillisecond bqPlayerPosition = 0;
 static jint bqPlayerBufSize = 0;
 static short *resampleBuf = NULL;
 static pthread_mutex_t audioEngineLock = PTHREAD_MUTEX_INITIALIZER;
@@ -91,17 +95,11 @@ void shutdown() {
     releaseFFmpegAudioPlay();
 }
 
-
 int getPCM() {
     while (av_read_frame(pFormatCtx, &packet) >= 0) {
         if (packet.stream_index == audioindex) {
             int ret = avcodec_send_packet(pCodecCtx, &packet);
-            int timestamp = packet.pts * av_q2d(pFormatCtx->streams[audioindex]->time_base);
-            int iHour = timestamp / 3600;//小时
-            int iMinute = timestamp % 3600 / 60;//分钟
-            int iSecond = timestamp % 60;//秒
-            LOGI("时间：%02d:%02d:%02d\n", iHour, iMinute, iSecond);
-
+            timestamp = packet.pts * av_q2d(pFormatCtx->streams[audioindex]->time_base);
             if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
                 break;
             ret = avcodec_receive_frame(pCodecCtx, pFrame);
@@ -187,13 +185,17 @@ extern "C"
 void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context) {
     assert(bq == bqPlayerBufferQueue);
     assert(NULL == context);
+    //pushTimeToJavaStart();
     // for streaming playback, replace this test by logic to find and fill the next buffer
-    if (getPCM() < 0)//解码音频文件
+    if (getPCM() < 0) {//解码音频文件
+        //pushTimeToJavaEnd();
         return;
+    }
     if (NULL != nextBuffer && 0 != nextSize) {
         SLresult result;
         // enqueue another buffer
         result = (*bqPlayerBufferQueue)->Enqueue(bqPlayerBufferQueue, nextBuffer, nextSize);
+        //pushTimeToJavaShow(timestamp, iTotalSeconds);
         // the most likely other result is SL_RESULT_BUFFER_INSUFFICIENT,
         // which for this code example would indicate a programming error
         if (SL_RESULT_SUCCESS != result) {
@@ -201,6 +203,7 @@ void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context) {
         }
         (void) result;
     } else {
+        //pushTimeToJavaEnd();
         releaseResampleBuf();
         pthread_mutex_unlock(&audioEngineLock);
     }
@@ -283,15 +286,15 @@ void createBufferQueueAudioPlayer(int sampleRate, int channel) {
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
     // 开始播放音乐
-    result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PLAYING);
+    result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PAUSED);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
 }
 
 extern "C"
 //int createFFmpegAudioPlay(const char *file_name) {
-int Java_com_lake_ndkaudiotest_MainActivity_play(JNIEnv *env, jclass clazz, jstring url) {
-
+int Java_com_lake_ndkaudiotest_MainActivity_play(JNIEnv *env, jobject thiz, jstring url) {
+    //jobj = thiz;
     int i;
     AVCodec *pCodec;
     //读取输入的音频文件地址
@@ -323,6 +326,7 @@ int Java_com_lake_ndkaudiotest_MainActivity_play(JNIEnv *env, jclass clazz, jstr
         LOGE("Couldn't find a video stream.\n");
         return -1;
     }
+    iTotalSeconds = (int) pFormatCtx->duration / 1000000;
     //获取相应音频流的解码器
     AVCodecParameters *pCodecPar = pFormatCtx->streams[audioindex]->codecpar;
     pCodec = avcodec_find_decoder(pCodecPar->codec_id);
@@ -369,24 +373,96 @@ int Java_com_lake_ndkaudiotest_MainActivity_play(JNIEnv *env, jclass clazz, jstr
 }
 
 extern "C"
-int Java_com_lake_ndkaudiotest_MainActivity_stop(JNIEnv *env, jclass clazz) {
+int Java_com_lake_ndkaudiotest_MainActivity_stop(JNIEnv *env, jobject thiz) {
+    timestamp = 0;
     shutdown();
     return 0;
 }
 
 extern "C"
-int Java_com_lake_ndkaudiotest_MainActivity_pause(JNIEnv *env, jclass clazz, jboolean isPlaying) {
+int Java_com_lake_ndkaudiotest_MainActivity_pause(JNIEnv *env, jobject thiz, jboolean isPause) {
     SLresult result;
     // make sure the asset audio player was created
     // 暂停音乐
     if (NULL != bqPlayerPlay) {
-        result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, isPlaying ? SL_PLAYSTATE_PAUSED
-                                                                       : SL_PLAYSTATE_PLAYING);
+        result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, isPause ? SL_PLAYSTATE_PAUSED
+                                                                     : SL_PLAYSTATE_PLAYING);
         assert(SL_RESULT_SUCCESS == result);
         (void) result;
     }
     return 0;
 }
+/*seek to start_time, in s*/
+extern "C"
+int internal_seek(int seekTime)//每次+10s跳转
+{
+    int64_t seek_pos = (int64_t) (seekTime /
+                                  av_q2d(pFormatCtx->streams[audioindex]->time_base));
+
+    if (av_seek_frame(pFormatCtx, audioindex, seek_pos, AVSEEK_FLAG_BACKWARD) < 0) {
+        LOGE("%s,  av_seek_frame() seek to %.3f failed!", __FUNCTION__,
+             (double) seek_pos / AV_TIME_BASE);
+        return -2;
+    }
+    avcodec_flush_buffers(pCodecCtx);
+
+    LOGI("exit internal_seek()");
+    return 0;
+}
+
+extern "C"
+int Java_com_lake_ndkaudiotest_MainActivity_seek(JNIEnv *env, jobject thiz, jint seekTime) {
+    SLresult result;
+    // make sure the asset audio player was created
+    // seek
+    if (NULL != bqPlayerPlay) {
+        result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PAUSED);
+        assert(SL_RESULT_SUCCESS == result);
+        (void) result;
+    }
+    internal_seek((int) seekTime);
+    if (NULL != bqPlayerPlay) {
+        result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PLAYING);
+        assert(SL_RESULT_SUCCESS == result);
+        (void) result;
+    }
+    return 0;
+}
+extern "C"
+void Java_com_lake_ndkaudiotest_MainActivity_showtime(JNIEnv *env, jobject thiz) {
+    int seconds = -1;
+    int totalSeconds = -1;
+    jclass jclazz = env->GetObjectClass(thiz);
+    jmethodID jmethodIDS = env->GetMethodID(jclazz, "showTime", "(I)V");
+    jmethodID jmethodIDT = env->GetMethodID(jclazz, "setToatalTime", "(I)V");
+    // make sure the asset audio player was created
+    // seek
+    while (true) {
+        if (timestamp != -1) {
+            if (seconds != timestamp) {
+                seconds = timestamp;
+                env->CallVoidMethod(thiz, jmethodIDS, (jint) timestamp);
+            }
+            usleep(100000);
+        }
+        if (iTotalSeconds != -1) {
+            if (totalSeconds != iTotalSeconds) {
+                totalSeconds = iTotalSeconds;
+                env->CallVoidMethod(thiz, jmethodIDT, (jint) iTotalSeconds);
+            }
+        }
+    }
+}
+
+jint JNI_OnLoad(JavaVM *vm, void *reserved)//这个类似android的生命周期，加载jni的时候会自己调用
+{
+    LOGI("JNI_OnLoad");
+    return JNI_VERSION_1_6;
+}
+
+
+
+
 
 
 

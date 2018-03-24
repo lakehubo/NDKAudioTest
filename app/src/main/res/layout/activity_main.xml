@@ -6,10 +6,42 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     tools:context="com.lake.ndkaudiotest.MainActivity">
-    <TextView
-        android:id="@+id/textview"
+    <ListView
+        android:id="@+id/listview"
+        android:layout_weight="1"
         android:layout_width="match_parent"
-        android:layout_height="40dp" />
+        android:layout_height="match_parent"></ListView>
+    <LinearLayout
+        android:orientation="horizontal"
+        android:layout_width="match_parent"
+        android:layout_height="50dp">
+        <TextView
+            android:layout_marginLeft="10dp"
+            android:gravity="center_vertical"
+            android:text="00:00:00"
+            android:id="@+id/showtime"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent" />
+        <TextView
+            android:id="@+id/filename"
+            android:gravity="center"
+            android:layout_marginRight="20dp"
+            android:layout_marginLeft="20dp"
+            android:layout_weight="1"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+        <TextView
+            android:layout_marginRight="10dp"
+            android:gravity="center_vertical"
+            android:text="00:00:00"
+            android:id="@+id/totaltime"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent" />
+    </LinearLayout>
+    <SeekBar
+        android:id="@+id/seekbar"
+        android:layout_width="match_parent"
+        android:layout_height="50dp" />
     <LinearLayout
         android:orientation="horizontal"
         android:layout_width="match_parent"
