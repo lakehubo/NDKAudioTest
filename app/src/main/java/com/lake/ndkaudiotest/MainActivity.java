@@ -22,16 +22,19 @@ import java.io.File;
 public class MainActivity extends AppCompatActivity implements View.OnClickListener {
     private SeekBar mSeekBar;
     private Thread timeThread;
-    private float seekTimeP;
+    private int seekTimeP;
     private int mProgress;
     private ListView listview;
     private TextView tVTime;
     private TextView tVName;
     private TextView tTTime;
     private int toTalTime;
-    private Button mBtnPlay, mBtnPause, mBtnStop;
+    private Button mBtnPlayOrPause, mBtnLast, mBtnNext;
     String inputurl;
     boolean isFirst = true;
+    private int curItem = 0;
+    boolean playing = false;
+    private int length = 0;
 
     // Used to load the 'native-lib' library on application startup.
     static {
@@ -57,7 +60,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
-                seek((int) seekTimeP * mProgress);
+                seek(mProgress);
             }
         });
 
@@ -69,28 +72,29 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         tVTime = findViewById(R.id.showtime);
         tTTime = findViewById(R.id.totaltime);
         mSeekBar = findViewById(R.id.seekbar);
-        mSeekBar.setMax(100);
 
-        mBtnPlay = findViewById(R.id.play);
-        mBtnPause = findViewById(R.id.pause);
-        mBtnStop = findViewById(R.id.stop);
-        mBtnPlay.setOnClickListener(this);
-        mBtnPause.setOnClickListener(this);
-        mBtnStop.setOnClickListener(this);
+        mBtnPlayOrPause = findViewById(R.id.playorpause);
+        mBtnLast = findViewById(R.id.last);
+        mBtnNext = findViewById(R.id.next);
+        mBtnPlayOrPause.setOnClickListener(this);
+        mBtnLast.setOnClickListener(this);
+        mBtnNext.setOnClickListener(this);
 
 
         final String folderurl = Environment.getExternalStorageDirectory().getPath();
         final File[] files = new File(folderurl + "/MyLocalPlayer").listFiles();
+        length = files.length;
         final ListFileAdapter myListAdapter = new ListFileAdapter(this, files);
         listview.setAdapter(myListAdapter);
         //myListAdapter.setSelectItem(0);
         listview.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override
             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+                curItem = position;
                 myListAdapter.setSelectItem(position);
                 myListAdapter.notifyDataSetInvalidated();
                 inputurl = folderurl + "/MyLocalPlayer/" + files[position].getName();
-                if(!isFirst){
+                if (!isFirst) {
                     stop();
                     mSeekBar.setProgress(0);
                 }
@@ -103,32 +107,53 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                             showtime();
                         }
                     });
-
                     timeThread.start();
                 }
+                pause(!playing);
             }
         });
-
+        clickListItem(curItem);
 
     }
 
     @Override
     public void onClick(View v) {
         switch (v.getId()) {
-            case R.id.play:
-                pause(false);
+            case R.id.playorpause:
+                pause(playing);
+                mBtnPlayOrPause.setText(playing ? "Play" : "Pause");
+                playing = !playing;
                 break;
-            case R.id.pause:
-                pause(true);
+            case R.id.last: {
+                int item = (curItem - 1) < 0 ? length-1 : curItem - 1;
+                clickListItem(item);
                 break;
-            case R.id.stop:
-                stop();
-                mSeekBar.setProgress(0);
-                play(inputurl);
+            }
+            case R.id.next: {
+                int item = (curItem + 1) >= length ? 0 : curItem + 1;
+                clickListItem(item);
                 break;
+            }
             default:
                 break;
         }
+    }
+
+    public void clickListItem(int position){
+        AdapterView.OnItemClickListener onItemClickListener = listview.getOnItemClickListener();
+        if (onItemClickListener != null) {
+            onItemClickListener.onItemClick(listview, null, position, position);
+            listview.setSelection(position);
+        }
+    }
+
+    /**
+     * 关闭播放器
+     */
+    public void shutdown() {
+        stop();
+        mSeekBar.setProgress(0);
+        play(inputurl);
     }
 
     /**
@@ -142,7 +167,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             @Override
             public void run() {
                 tVTime.setText(n);
-                mSeekBar.setProgress((int) (((float) time / (float) toTalTime) * 100));
+                mSeekBar.setProgress(time);
             }
         });
         Log.e("lake", "showTime: " + n);
@@ -155,7 +180,8 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
      */
     public void setToatalTime(int total) {
         toTalTime = total;
-        seekTimeP = (float) total / 100;
+        mSeekBar.setMax(total);
+        Log.e("lake", "toTalTime: " + toTalTime + ",seekTimeP:" + seekTimeP);
         final String t = resetTimeInt(total / 3600) + ":" + resetTimeInt(total % 3600 / 60) + ":" + resetTimeInt(total % 60);
         runOnUiThread(new Runnable() {
             @Override
@@ -163,6 +189,27 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 tTTime.setText(t);
             }
         });
+    }
+
+    /**
+     * 播放结束
+     *
+     * @param isEnd
+     */
+    public void isPlayEnd(boolean isEnd) {
+        Log.e("lake", "isPlayEnd: " + isEnd);
+        if (isEnd) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    AdapterView.OnItemClickListener onItemClickListener = listview.getOnItemClickListener();
+                    if (onItemClickListener != null) {
+                        onItemClickListener.onItemClick(listview, null, curItem + 1, curItem + 1);
+                    }
+                    pause(false);
+                }
+            });
+        }
     }
 
     @Override

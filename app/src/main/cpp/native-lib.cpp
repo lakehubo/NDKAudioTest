@@ -34,6 +34,7 @@ static int audioindex;
 uint8_t *outputBuffer;
 int timestamp = -1;
 int iTotalSeconds = -1;
+bool isEnd = false;
 
 // engine interfaces
 static SLObjectItf engineObject = NULL;
@@ -47,8 +48,6 @@ static SLEffectSendItf bqPlayerEffectSend;
 static SLMuteSoloItf bqPlayerMuteSolo;
 static SLVolumeItf bqPlayerVolume;
 static SLmilliHertz bqPlayerSampleRate = 0;
-static SLmillisecond bqPlayerPosition = 0;
-static jint bqPlayerBufSize = 0;
 static short *resampleBuf = NULL;
 static pthread_mutex_t audioEngineLock = PTHREAD_MUTEX_INITIALIZER;
 // aux effect on the output mix, used by the buffer queue player
@@ -57,15 +56,28 @@ static const SLEnvironmentalReverbSettings reverbSettings =
 
 // 释放相关资源
 void releaseFFmpegAudioPlay() {
-    av_packet_unref(&packet);
-    av_free(outputBuffer);
-    av_free(pFrame);
-    avcodec_close(pCodecCtx);
-    avformat_close_input(&pFormatCtx);
+    if (NULL != &packet) {
+        av_packet_unref(&packet);
+    }
+    if (NULL != outputBuffer) {
+        av_free(outputBuffer);
+    }
+    if (NULL != pFrame) {
+        av_free(pFrame);
+    }
+    if (NULL != pCodecCtx) {
+        avcodec_close(pCodecCtx);
+    }
+    if (NULL != &pFormatCtx) {
+        avformat_close_input(&pFormatCtx);
+    }
 }
 
 // shut down the native audio system
 void shutdown() {
+    if (NULL != bqPlayerBufferQueue) {
+        (*bqPlayerBufferQueue)->Clear(bqPlayerBufferQueue);
+    }
     // destroy buffer queue audio player object, and invalidate all associated interfaces
     if (bqPlayerObject != NULL) {
         (*bqPlayerObject)->Destroy(bqPlayerObject);
@@ -124,7 +136,7 @@ int getPCM() {
         }
         av_packet_unref(&packet);
     }
-    shutdown();
+    LOGI("getPCM_shutdown");
     return -1;
 }
 
@@ -185,17 +197,15 @@ extern "C"
 void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context) {
     assert(bq == bqPlayerBufferQueue);
     assert(NULL == context);
-    //pushTimeToJavaStart();
     // for streaming playback, replace this test by logic to find and fill the next buffer
     if (getPCM() < 0) {//解码音频文件
-        //pushTimeToJavaEnd();
+        pthread_mutex_unlock(&audioEngineLock);
         return;
     }
     if (NULL != nextBuffer && 0 != nextSize) {
         SLresult result;
         // enqueue another buffer
         result = (*bqPlayerBufferQueue)->Enqueue(bqPlayerBufferQueue, nextBuffer, nextSize);
-        //pushTimeToJavaShow(timestamp, iTotalSeconds);
         // the most likely other result is SL_RESULT_BUFFER_INSUFFICIENT,
         // which for this code example would indicate a programming error
         if (SL_RESULT_SUCCESS != result) {
@@ -203,11 +213,19 @@ void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context) {
         }
         (void) result;
     } else {
-        //pushTimeToJavaEnd();
         releaseResampleBuf();
         pthread_mutex_unlock(&audioEngineLock);
     }
 }
+
+/*监听是否播放结束*/
+void playOverEvent(SLPlayItf caller, void *pContext, SLuint32 playevent) {
+    if (playevent == SL_PLAYEVENT_HEADATEND) {
+        LOGI("播放结束！！！");
+        isEnd = true;
+    }
+}
+
 
 // create buffer queue audio player
 extern "C"
@@ -285,6 +303,14 @@ void createBufferQueueAudioPlayer(int sampleRate, int channel) {
     result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_VOLUME, &bqPlayerVolume);
     assert(SL_RESULT_SUCCESS == result);
     (void) result;
+    //注册回调
+    result = (*bqPlayerPlay)->RegisterCallback(bqPlayerPlay, playOverEvent, NULL);
+    assert(SL_RESULT_SUCCESS == result);
+    (void) result;
+    //设置播放结束回调
+    result = (*bqPlayerPlay)->SetCallbackEventsMask(bqPlayerPlay, SL_PLAYEVENT_HEADATEND);
+    assert(SL_RESULT_SUCCESS == result);
+    (void) result;
     // 开始播放音乐
     result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PAUSED);
     assert(SL_RESULT_SUCCESS == result);
@@ -294,7 +320,7 @@ void createBufferQueueAudioPlayer(int sampleRate, int channel) {
 extern "C"
 //int createFFmpegAudioPlay(const char *file_name) {
 int Java_com_lake_ndkaudiotest_MainActivity_play(JNIEnv *env, jobject thiz, jstring url) {
-    //jobj = thiz;
+    isEnd = false;
     int i;
     AVCodec *pCodec;
     //读取输入的音频文件地址
@@ -432,9 +458,11 @@ extern "C"
 void Java_com_lake_ndkaudiotest_MainActivity_showtime(JNIEnv *env, jobject thiz) {
     int seconds = -1;
     int totalSeconds = -1;
+    bool end = false;
     jclass jclazz = env->GetObjectClass(thiz);
     jmethodID jmethodIDS = env->GetMethodID(jclazz, "showTime", "(I)V");
     jmethodID jmethodIDT = env->GetMethodID(jclazz, "setToatalTime", "(I)V");
+    jmethodID jmethodIDE = env->GetMethodID(jclazz, "isPlayEnd", "(Z)V");
     // make sure the asset audio player was created
     // seek
     while (true) {
@@ -443,7 +471,6 @@ void Java_com_lake_ndkaudiotest_MainActivity_showtime(JNIEnv *env, jobject thiz)
                 seconds = timestamp;
                 env->CallVoidMethod(thiz, jmethodIDS, (jint) timestamp);
             }
-            usleep(100000);
         }
         if (iTotalSeconds != -1) {
             if (totalSeconds != iTotalSeconds) {
@@ -451,6 +478,11 @@ void Java_com_lake_ndkaudiotest_MainActivity_showtime(JNIEnv *env, jobject thiz)
                 env->CallVoidMethod(thiz, jmethodIDT, (jint) iTotalSeconds);
             }
         }
+        if (isEnd != end) {
+            end = isEnd;
+            env->CallVoidMethod(thiz, jmethodIDE, (jboolean) isEnd);
+        }
+        usleep(100000);
     }
 }
 
